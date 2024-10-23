@@ -86,7 +86,7 @@ def load_dataset(dataset, num_ways, num_shots, num_queries, episodes):
     
     train_sampler = FewShotSampler(trainset_labels, num_ways, num_shots, num_queries, episodes)
     test_sampler = FewShotSampler(testset_labels, num_ways, num_shots, 15, 600)
-    val_sampler = FewShotSampler(valset_labels, num_ways, num_shots, 1, 10)
+    val_sampler = FewShotSampler(valset_labels, num_ways, num_shots, 15, 100)
     
     train_loader = DataLoader(trainset, batch_sampler=train_sampler)
     test_loader = DataLoader(testset, batch_sampler=test_sampler)
