@@ -8,13 +8,16 @@ class MatchNet(nn.Module):
         self.embedding = backbone
         self.temperature = 1
         
-    def forward(self, x_support, x_query, y_support):
+    def forward(self, tasks, num_ways):
+        x_support, x_query, y_support, y_query = tasks[0]
         support_set = self.embedding(x_support)
         query_set = self.embedding(x_query)
         
         #for prediction
         one_hot_label = F.one_hot(y_support).float() # num_support_set * num_ways
         attention = torch.softmax(F.cosine_similarity(support_set.unsqueeze(0), query_set.unsqueeze(1), dim=-1), dim=1) # num_query_set * num_support_set
-        distance = torch.einsum('qs, sn -> qn', attention, one_hot_label)
+        logits = torch.einsum('qs, sn -> qn', attention, one_hot_label)
         
-        return distance
+        loss = F.cross_entropy(logits, y_query)
+        
+        return loss, logits

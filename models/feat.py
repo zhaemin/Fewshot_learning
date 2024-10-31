@@ -17,8 +17,8 @@ class SelfAttention(nn.Module):
     def forward(self, x):
         qkv = self.make_qkv(x)
         q, k, v = torch.chunk(qkv, 3, dim=-1) 
-        att = torch.softmax(torch.einsum('qd, kd -> qk', q, k)*self.scaling, dim=-1)
-        y = torch.einsum('qk, vd -> qd', att, v)
+        att = torch.softmax(torch.einsum('bqd, bkd -> bqk', q, k)*self.scaling, dim=-1)
+        y = torch.einsum('bqk, bvd -> bqd', att, v)
         y = self.dropout(self.fc(y))
         y = self.norm(x+y)
         return y
@@ -32,28 +32,33 @@ class FEAT(nn.Module):
         self.temp = 1/64
         self.temp_for_constrative = 1/32
         
-    def forward(self, x_support, x_query, num_ways):
+    def forward(self, tasks, num_ways):
+        x_support, x_query, y_support, y_query = tasks[0]
+        num_supports, num_queries = y_support.size(0)//num_ways, y_query.size(0)//num_ways
         support_set = self.embedding(x_support)
         query_set = self.embedding(x_query)
         
         #for prediction
-        prototypes = torch.mean(support_set.view(num_ways, -1, self.emb_dim), dim=1).squeeze(1) # 5 shots 640 -> 5 640
-        prototypes_transform = self.attention(prototypes) 
-        distances = torch.cdist(query_set, prototypes_transform)*self.temp
+        prototypes = torch.mean(support_set.view(num_ways, -1, self.emb_dim), dim=1).unsqueeze(0)
+        prototypes_transform = self.attention(prototypes).view(-1, self.emb_dim)
+        logits = -torch.cdist(query_set, prototypes_transform)*self.temp
+        
+        loss = F.cross_entropy(logits, y_query)
         
         #for contrastive loss
         if self.training:
             support_set = support_set.view(num_ways, -1, self.emb_dim)
             query_set = query_set.view(num_ways, -1, self.emb_dim)
-            aux_set = torch.cat((support_set, query_set), dim=1).view(-1, self.emb_dim) #num_ways * num_support_set+num_query_set * 640
+            aux_set = torch.cat((support_set, query_set), dim=1).view(num_ways, -1, self.emb_dim) #num_ways * num_support_set+num_query_set * 640
+            aux_set_transform = self.attention(aux_set)
             
-            aux_set_transform = self.attention(aux_set).view(num_ways, -1, self.emb_dim)
             aux_center = torch.mean(aux_set_transform, dim=1)
             aux_set_transform = aux_set_transform.view(-1, self.emb_dim)
-            aux_distances = torch.cdist(aux_set_transform, aux_center)*self.temp_for_constrative
+            aux_logits = -torch.cdist(aux_set_transform, aux_center)*self.temp_for_constrative
+            aux_y = torch.cat((y_support.view(num_ways, -1),y_query.view(num_ways, -1)),dim=-1).view(-1)
             #aux_set_transform = F.normalize(aux_center, dim=-1)
             #cosine_sim = torch.einsum('qd, nd -> qn', aux_set_transform, aux_center)*self.temp_for_constrative
             
-            return -distances, -aux_distances
-        else:
-            return -distances
+            loss += F.cross_entropy(aux_logits, aux_y)*0.1
+            
+        return loss, logits

@@ -18,13 +18,6 @@ class ConvBlock(nn.Module):
         x = self.max_pool(x)
         return x
 
-def make_convblock(input, w_conv, b_conv, w_bn, b_bn):
-    x = F.conv2d(input, w_conv, b_conv, padding=1)
-    x = F.batch_norm(x, running_mean=None, running_var=None, weight=w_bn, bias=b_bn, training=True)
-    x = F.relu(x)
-    output = F.max_pool2d(x, kernel_size=2, stride=2)
-    
-    return output
 
 class CNNclasifier(nn.Module):
     def __init__(self, num_classes):
@@ -36,6 +29,9 @@ class CNNclasifier(nn.Module):
         self.layer4 = ConvBlock(32, 32)
         self.fc = nn.Linear(32*5*5, num_classes)
 
+        self.register_buffer('running_mean', torch.zeros(4, 32, requires_grad=False))
+        self.register_buffer('running_var', torch.ones(4, 32, requires_grad=False))
+
     def forward(self,x):
         y = self.layer1(x)
         y = self.layer2(y)
@@ -46,10 +42,32 @@ class CNNclasifier(nn.Module):
         
         return y
     
-    def params_forward(self, x, params):
+    def reset_buffers(self):
+        self.running_mean.fill_(0)
+        self.running_var.fill_(1)
+        
+    # inner loop에서 학습할 때 running_mean과 running_var 갱신하고, outer loop에서 query set으로 initial param 업데이트할 때 해당 값을 사용
+    def make_convblock(self, input, w_conv, b_conv, w_bn, b_bn, layer_num, training):
+        x = F.conv2d(input, w_conv, b_conv, padding=1)
+        
+        buffer_idx = layer_num-1
+        batch_mean, batch_var = x.mean(dim=(0,2,3)), x.var(dim=(0,2,3))
+        #x = F.batch_norm(x, weight=w_bn, bias=b_bn, running_mean=None, running_var=None, training=training)
+        x = F.batch_norm(x, weight=w_bn, bias=b_bn, running_mean=self.running_mean[buffer_idx].clone(), running_var=self.running_var[buffer_idx].clone(), training=training)
+        
+        if training:
+            with torch.no_grad():
+                self.running_mean[buffer_idx] = self.running_mean[buffer_idx]*0.9 + batch_mean*0.1
+                self.running_var[buffer_idx] = self.running_var[buffer_idx]*0.9 + batch_var*0.1
+                
+        x = F.relu(x)
+        output = F.max_pool2d(x, kernel_size=2, stride=2)
+        return output
+    
+    def params_forward(self, x, params, training):
         for block in range(1,5):
-            x = make_convblock(x, params[f"layer{block}.conv2d.weight"], params[f"layer{block}.conv2d.bias"], 
-                            params.get(f"layer{block}.bn.weight"), params.get(f"layer{block}.bn.bias"))
+            x = self.make_convblock(x, params.get(f"layer{block}.conv2d.weight"), params.get(f"layer{block}.conv2d.bias"), 
+                            params.get(f"layer{block}.bn.weight"), params.get(f"layer{block}.bn.bias"), block, training)
         x = x.view(x.size(0), -1)
         x = F.linear(x, params["fc.weight"], params["fc.bias"])
         return x
@@ -60,20 +78,28 @@ class MAML(nn.Module):
         self.classifier = CNNclasifier(num_ways)
         self.inner_lr = inner_lr
     
-    def forward(self, tasks, num_inner_steps):
+    def forward(self, tasks, num_ways):
+        if self.training:
+            num_inner_steps = 1
+        else:
+            num_inner_steps = 10
+            
         total_loss = 0
         
         for x_support, x_query, y_support, y_query in tasks:
             fast_weights = collections.OrderedDict(self.classifier.named_parameters())
+            self.classifier.reset_buffers()
             
             for i in range(num_inner_steps):
-                logits_support = self.classifier.params_forward(x_support, fast_weights)
+                logits_support = self.classifier.params_forward(x_support, fast_weights, True)
                 loss_support = F.cross_entropy(logits_support, y_support)
                 grads = torch.autograd.grad(loss_support, fast_weights.values(), create_graph=True)
                 fast_weights = collections.OrderedDict((name, param - self.inner_lr * grads) for ((name, param), grads) in zip(fast_weights.items(), grads))
             
-            logits_query = self.classifier.params_forward(x_query, fast_weights)
+            logits_query = self.classifier.params_forward(x_query, fast_weights, False)
             loss_query = F.cross_entropy(logits_query, y_query)
             total_loss += loss_query
+            
+        self.fast_weights = fast_weights
         
         return total_loss/len(tasks), logits_query
