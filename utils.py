@@ -48,12 +48,12 @@ def load_model(args):
             emb_dim = 640
         elif args.backbone == 'convnet':
             backbone = convnet.ConvNet()
-            model_dict = backbone.state_dict()
-            pretrained_dict = torch.load('con_pre-avg.pth')['params']
+            #model_dict = backbone.state_dict()
+            #pretrained_dict = torch.load('con_pre-avg.pth')['params']
             emb_dim = 64
-        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-        model_dict.update(pretrained_dict)
-        backbone.load_state_dict(model_dict)
+        #pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        #model_dict.update(pretrained_dict)
+        #backbone.load_state_dict(model_dict)
         
         for param in backbone.parameters():
             param.requires_grad = True
@@ -67,7 +67,7 @@ def load_model(args):
     elif args.model == 'matchnet':
         net = matchnet.MatchNet(backbone)
     elif args.model == 'maml':
-        if args.unsupervised == 'umtra':
+        if args.unsupervised == 'umtra' or args.unsupervised == 'cactus':
             net = maml.MAML(inner_lr=0.05, num_ways=args.train_num_ways)
         else:
             net = maml.MAML(inner_lr=0.01, num_ways=args.train_num_ways)
@@ -78,10 +78,11 @@ def set_parameters(args, net):
     if args.optimizer == 'adam':
         optimizer = optim.Adam(net.parameters(), lr = args.learningrate)
         scheduler = None
+        #scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 40, 80, 100, 120], gamma=0.5)
     if args.optimizer == 'sgd':
         if args.model == 'feat':
             optimizer = optim.SGD([
-                {'params': net.embedding.parameters()},  
+                {'params': net.embedding.parameters()}, 
                 {'params': net.attention.parameters(), 'lr': args.learningrate*10}], 
                 lr=args.learningrate, momentum=0.9, weight_decay=5e-4, nesterov=True)
         else:

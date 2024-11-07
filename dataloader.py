@@ -56,6 +56,22 @@ class FewShotSampler(Sampler):
     def __len__(self):
         return self.episodes
 
+class UMTRA_transform(torch.nn.Module):
+    def __init__(self, num_ways):
+        super(UMTRA_transform, self).__init__()
+        self.num_ways = num_ways
+        
+    def __call__(self, x):
+        transform_train = transforms.PILToTensor()
+        normalize = transforms.Normalize((0.485, 0.456, 0.406),(0.229, 0.224, 0.225))
+        transform_val = transforms.AutoAugment()
+        
+        x = transform_train(x)
+        x1 = normalize(x/255.0)
+        x2 = normalize(transform_val(x)/255.0)
+        
+        return [x1, x2]
+
 def load_dataset(args):
     transform_test = transforms.Compose([ 
         transforms.ToTensor(),
@@ -66,12 +82,11 @@ def load_dataset(args):
             transforms.ToTensor(),
             transforms.RandomHorizontalFlip(),
             transforms.RandomResizedCrop((84,84), antialias=True),
-            transforms.ColorJitter(),
             transforms.Normalize((0.485, 0.456, 0.406),(0.229, 0.224, 0.225))])
         
         trainset = torchvision.datasets.ImageFolder(root='../data/fewshotdata/miniimagenet/data/train', transform=transform_train)
         if args.unsupervised == 'umtra':
-            trainset = torchvision.datasets.ImageFolder(root='../data/fewshotdata/miniimagenet/data/train', transform=transform_test)
+            trainset = torchvision.datasets.ImageFolder(root='../data/fewshotdata/miniimagenet/data/train', transform=UMTRA_transform(args.train_num_ways))
         testset = torchvision.datasets.ImageFolder(root='../data/fewshotdata/miniimagenet/data/test', transform=transform_test)
         valset = torchvision.datasets.ImageFolder(root='../data/fewshotdata/miniimagenet/data/val', transform=transform_test)
         
@@ -91,17 +106,17 @@ def load_dataset(args):
     valset_labels = torch.LongTensor(valset.targets)
     
     train_sampler = FewShotSampler(trainset_labels, args.train_num_ways, args.num_shots, args.num_queries, args.episodes, args.num_tasks)
-    test_sampler = FewShotSampler(testset_labels, args.test_num_ways, args.num_shots, 15, 600, num_tasks=1)
-    val_sampler = FewShotSampler(valset_labels, args.test_num_ways, args.num_shots, 15, 100, num_tasks=1)
+    test_sampler = FewShotSampler(testset_labels, args.test_num_ways, args.num_shots, args.num_queries, 600, num_tasks=1)
+    val_sampler = FewShotSampler(valset_labels, args.test_num_ways, args.num_shots, args.num_queries, 100, num_tasks=1)
     
-    train_loader = DataLoader(trainset, batch_sampler=train_sampler)
-    test_loader = DataLoader(testset, batch_sampler=test_sampler)
-    val_loader = DataLoader(valset, batch_sampler=val_sampler)
+    train_loader = DataLoader(trainset, batch_sampler=train_sampler, pin_memory=True)
+    test_loader = DataLoader(testset, batch_sampler=test_sampler, pin_memory=True)
+    val_loader = DataLoader(valset, batch_sampler=val_sampler, pin_memory=True)
     
     if args.unsupervised == 'umtra':
         randomsampler = RandomSampler(trainset, replacement=True, num_samples=args.train_num_ways*args.num_tasks*args.episodes)
-        train_loader = DataLoader(trainset, sampler=randomsampler, batch_size=args.train_num_ways*args.num_tasks)
-    elif args.model == 'pretrain_resnet':
+        train_loader = DataLoader(trainset, sampler=randomsampler, batch_size=args.train_num_ways*args.num_tasks, num_workers=2, pin_memory=True)
+    elif args.model == 'pretrain_resnet' or args.unsupervised == 'cactus':
         train_loader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=2)
 
     return train_loader, test_loader, val_loader
