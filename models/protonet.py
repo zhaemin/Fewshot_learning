@@ -18,8 +18,6 @@ class ProtoNet(nn.Module):
         #for prediction
         prototypes = torch.mean(support_set.view(num_ways, -1, self.emb_dim), dim=1)
         logits = -torch.cdist(query_set, prototypes)*self.temperature
-        #prototypes = F.normalize(prototypes, dim=-1)
-        #cosine_sim = torch.einsum('qd, nd -> qn', query_set, prototypes)*self.temp_for_constrative
         
         loss = F.cross_entropy(logits, y_query)
         

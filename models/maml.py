@@ -28,7 +28,7 @@ class CNNclasifier(nn.Module):
         self.layer3 = ConvBlock(32, 32)
         self.layer4 = ConvBlock(32, 32)
         self.fc = nn.Linear(32*5*5, num_classes)
-
+        
         self.register_buffer('running_mean', torch.zeros(4, 32, requires_grad=False))
         self.register_buffer('running_var', torch.ones(4, 32, requires_grad=False))
 
@@ -43,31 +43,26 @@ class CNNclasifier(nn.Module):
         return y
     
     def reset_buffers(self):
-        self.running_mean.fill_(0)
-        self.running_var.fill_(1)
+        self.running_mean = torch.zeros_like(self.running_mean)
+        self.running_var = torch.ones_like(self.running_var)
         
     # inner loop에서 학습할 때 running_mean과 running_var 갱신하고, outer loop에서 query set으로 initial param 업데이트할 때 해당 값을 사용
-    def make_convblock(self, input, w_conv, b_conv, w_bn, b_bn, layer_num, training):
+    def make_convblock(self, input, w_conv, b_conv, w_bn, b_bn, running_mean, running_var, training):
         x = F.conv2d(input, w_conv, b_conv, padding=1)
-        
-        buffer_idx = layer_num-1
-        batch_mean, batch_var = x.mean(dim=(0,2,3)), x.var(dim=(0,2,3))
-        #x = F.batch_norm(x, weight=w_bn, bias=b_bn, running_mean=None, running_var=None, training=training)
-        x = F.batch_norm(x, weight=w_bn, bias=b_bn, running_mean=self.running_mean[buffer_idx].clone(), running_var=self.running_var[buffer_idx].clone(), training=training)
-        
-        if training:
-            with torch.no_grad():
-                self.running_mean[buffer_idx] = self.running_mean[buffer_idx]*0.9 + batch_mean*0.1
-                self.running_var[buffer_idx] = self.running_var[buffer_idx]*0.9 + batch_var*0.1
-                
+        x = F.batch_norm(x, weight=w_bn, bias=b_bn, running_mean=running_mean, running_var=running_var, training=training)
         x = F.relu(x)
         output = F.max_pool2d(x, kernel_size=2, stride=2)
         return output
     
     def params_forward(self, x, params, training):
         for block in range(1,5):
-            x = self.make_convblock(x, params.get(f"layer{block}.conv2d.weight"), params.get(f"layer{block}.conv2d.bias"), 
-                            params.get(f"layer{block}.bn.weight"), params.get(f"layer{block}.bn.bias"), block, training)
+            x = self.make_convblock(x, params.get(f"layer{block}.conv2d.weight"),
+                                    params.get(f"layer{block}.conv2d.bias"), 
+                                    params.get(f"layer{block}.bn.weight"), 
+                                    params.get(f"layer{block}.bn.bias"),
+                                    self.running_mean[block-1],
+                                    self.running_var[block-1],
+                                    training)
         x = x.view(x.size(0), -1)
         x = F.linear(x, params["fc.weight"], params["fc.bias"])
         return x
@@ -80,9 +75,9 @@ class MAML(nn.Module):
     
     def forward(self, tasks, num_ways):
         if self.training:
-            num_inner_steps = 1
+            num_inner_steps = 5
         else:
-            num_inner_steps = 10
+            num_inner_steps = 50
             
         total_loss = 0
         
@@ -100,6 +95,4 @@ class MAML(nn.Module):
             loss_query = F.cross_entropy(logits_query, y_query)
             total_loss += loss_query
             
-        self.fast_weights = fast_weights
-        
         return total_loss/len(tasks), logits_query
