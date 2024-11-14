@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import collections
 
+from utils import split_support_query_set
+
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(ConvBlock, self).__init__()
@@ -17,7 +19,6 @@ class ConvBlock(nn.Module):
         x = self.relu(x)
         x = self.max_pool(x)
         return x
-
 
 class CNNclasifier(nn.Module):
     def __init__(self, num_classes):
@@ -72,8 +73,14 @@ class MAML(nn.Module):
         super(MAML, self).__init__()
         self.classifier = CNNclasifier(num_ways)
         self.inner_lr = inner_lr
-    
-    def forward(self, tasks, num_ways):
+        
+    def forward(self, args, inputs, labels, num_ways, device):
+        
+        if args.unsupervised == 'umtra':
+            tasks = split_support_query_set(inputs, labels, num_ways, 1, 1, args.num_tasks, self.training, device)
+        else:
+            tasks = split_support_query_set(inputs, labels, num_ways, args.num_shots, args.num_queries, args.num_tasks, self.training, device)
+        
         if self.training:
             num_inner_steps = 5
         else:
@@ -94,5 +101,13 @@ class MAML(nn.Module):
             logits_query = self.classifier.params_forward(x_query, fast_weights, False)
             loss_query = F.cross_entropy(logits_query, y_query)
             total_loss += loss_query
-            
-        return total_loss/len(tasks), logits_query
+        
+        acc = None
+        if not self.training:
+            with torch.no_grad():
+                _, predicted = torch.max(logits_query.data,1)
+                total = args.num_queries * args.test_num_ways
+                correct = (predicted == y_query).sum().item()
+                acc = 100*correct/total
+                
+        return total_loss/len(tasks), acc

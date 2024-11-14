@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from utils import split_support_query_set
 
 class ConvBlock(nn.Sequential):
     def __init__(self, in_features, out_features, padding):
@@ -56,21 +57,29 @@ class RelationNet(nn.Module):
         super(RelationNet, self).__init__()
         self.encoder = CNNEncoder() # n * 64 * 19 * 19
         self.relationblock = RelationBlock()
-    
-    def forward(self, tasks, num_ways):
-        x_support, x_query, y_support, y_query = tasks[0]
-        num_supports, num_queries = y_support.size(0)//num_ways, y_query.size(0)//num_ways
-        support_set = self.encoder(x_support)
-        query_set = self.encoder(x_query)
         
-        support_set = torch.sum(support_set.view(num_ways, -1, 64, 19, 19), dim=1) # num_ways 64 19 19
-        support_set = support_set.unsqueeze(0).repeat(num_queries*num_ways, 1, 1, 1, 1) # num_support_set num_ways 64 19 19
-        query_set = torch.transpose(query_set.unsqueeze(0).repeat(num_ways, 1, 1, 1, 1), 0, 1) # num_support_set num_ways 64 19 19
+    def forward(self, args, inputs, labels, num_ways, device):
+        inputs = self.encoder(inputs)
+        tasks = split_support_query_set(inputs, labels, num_ways, args.num_shots, args.num_queries, args.num_tasks, self.training, device)
+        total_loss = 0
         
-        relation_input = torch.cat((support_set, query_set), dim=2).view(-1, 128, 19, 19) # num_support_set*num_queries 128 19 19
-        relation_output = self.relationblock(relation_input).view(-1, num_ways)
+        for task in tasks:
+            support_set, query_set, y_support, y_query = task
+            
+            support_set = torch.sum(support_set.view(num_ways, -1, 64, 19, 19), dim=1) # num_ways 64 19 19
+            support_set = support_set.unsqueeze(0).repeat(args.num_queries*num_ways, 1, 1, 1, 1) # num_support_set num_ways 64 19 19
+            query_set = torch.transpose(query_set.unsqueeze(0).repeat(num_ways, 1, 1, 1, 1), 0, 1) # num_support_set num_ways 64 19 19
+            
+            relation_input = torch.cat((support_set, query_set), dim=2).view(-1, 128, 19, 19) # num_support_set*num_queries 128 19 19
+            relation_output = self.relationblock(relation_input).view(-1, num_ways)
+            
+            one_hot_labels = F.one_hot(y_query).float()
+            loss = F.mse_loss(relation_output, one_hot_labels)
+            total_loss += loss
         
-        one_hot_labels = F.one_hot(y_query).float()
-        loss = F.mse_loss(relation_output, one_hot_labels)
-        
-        return loss, relation_output
+        with torch.no_grad():
+            _, predicted = torch.max(relation_output.data,1)
+            total = args.num_queries * args.test_num_ways
+            correct = (predicted == y_query).sum().item()
+                
+        return total_loss/len(tasks), 100*correct/total
